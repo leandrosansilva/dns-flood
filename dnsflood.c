@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -13,6 +14,7 @@
 #include <netinet/udp.h>
 #include <sys/wait.h>
 #include <getopt.h>
+#include <arpa/inet.h>
 
 #define	  CLASS_INET 1
 
@@ -26,12 +28,12 @@ enum dns_type {
 	TYPE_MB,		//7
 	TYPE_MG,		//8
 	TYPE_MR,		//9
-	TYPE_NULL,		//10 
-	TYPE_WKS,		//11 
-	TYPE_PTR,		//12 
+	TYPE_NULL,		//10
+	TYPE_WKS,		//11
+	TYPE_PTR,		//12
 	TYPE_HINFO,		//13
 	TYPE_MINFO,		//14
-	TYPE_MX,		//15 
+	TYPE_MX,		//15
 	TYPE_TXT,		//16
 	TYPE_ANY,   
 	TYPE_AAAA = 0x1c,
@@ -84,6 +86,13 @@ struct dnshdr {
 	unsigned short int num_rr;
 	unsigned short int num_rrsup;
 };
+
+struct random_ips {
+  unsigned len;
+  long *ips;
+};
+
+struct random_ips random_ips;
 
 uint16_t get_type(const char *type)
 {
@@ -139,6 +148,7 @@ void usage(char *progname)
 			"\t-i, --interval\t\tinterval (in millisecond) between two packets\n"
 			"\t-n, --number\t\tnumber of DNS requests to send\n"
 			"\t-r, --random\t\tfake random source IP\n"
+			"\t-f, --file\t\tload IPs (v4) from file. One IP per line, newline separated\n"
 			"\t-D, --daemon\t\trun as daemon\n"
 			"\t-h, --help\n"
 			"\n"
@@ -204,7 +214,7 @@ int make_question_packet(char *data, char *name, int type)
 		nameformatIP(name,data);
   	*( (u_short *) (data+strlen(data)+1) ) = htons(TYPE_PTR);
 	}
-       
+
 */
 
 	*((u_short *) (data + strlen(data) + 3)) = htons(CLASS_INET);
@@ -212,8 +222,52 @@ int make_question_packet(char *data, char *name, int type)
 	return (strlen(data) + 5);
 }
 
-int read_ip_from_file(char *filename)
+void read_ips_from_file(const char const *filename)
 {
+  FILE *f = fopen(filename, "r");
+
+  if (f == NULL) {
+    exit(1);
+  }
+
+  char ch;
+
+  random_ips.len = 0;
+
+  while ((ch=fgetc(f)) != EOF) {
+    if (ch == '\n') {
+      random_ips.len++;
+    }
+  }
+
+  if (fseek(f, 0, SEEK_SET) != 0) {
+    exit(1);
+  }
+
+  // NOTE: this gets deallocated when the process ends.
+  // Dirty, but works :-)
+  random_ips.ips = calloc(random_ips.len, sizeof(long));
+
+  char line[128];
+
+  long line_number = 0;
+
+  // TODO: handle file being changed in between...
+  // But who cares really?
+  while (fgets(line, sizeof(line), f) != NULL) {
+    line[strcspn(line, "\n")] = '\0';
+    struct in_addr addr;
+    if (inet_aton(line, &addr) != 1) {
+      exit(1);
+    }
+
+    random_ips.ips[line_number] = addr.s_addr;
+    line_number++;
+  }
+
+  if (fclose(f) != 0) {
+    exit(1);
+  }
 }
 
 int main(int argc, char **argv)
@@ -293,8 +347,7 @@ int main(int argc, char **argv)
 			break;
 
 		case 'f':
-			if (read_ip_from_file(optarg)) {
-			}
+			read_ips_from_file(optarg);
 			break;
 
 		case 's':
@@ -395,7 +448,11 @@ int main(int argc, char **argv)
 		ssize_t ret;
 
 		if (random_ip) {
-			src_ip.s_addr = random();
+      if (random_ips.len == 0) {
+			  src_ip.s_addr = random();
+      } else {
+			  src_ip.s_addr = random_ips.ips[random() % random_ips.len];
+      }
 		}
 
 		dns_header->id = random();
